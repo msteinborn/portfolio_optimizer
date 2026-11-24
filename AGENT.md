@@ -16,6 +16,7 @@ Keep business logic strictly separated from the GUI:
 - `src/data.py` — `MarketDataset`, default 5-market international equity preset, stdlib `csv` + `io.StringIO` import/export for market assumptions and optimal weights.
 - `src/ui.py` — `PortfolioOptimizerView` Flet v1.0+ UI, auto-mirroring correlation grid, CAL target selector, Matplotlib PNG chart renderer, browser-safe `FilePicker` CSV I/O, and summary table.
 - `main.py` — Application entry point (`ft.run(main)`).
+- `vercel.json` — Static Vercel deployment config (`framework: null`, installs `flet`/`flet-cli`/`flet-web` into `/tmp/flet-venv` via `uv` to satisfy PEP 668 and keep the venv outside the repo, runs `flet publish main.py`, serves `dist/`).
 - `tests/test_optimizer.py`, `tests/test_data.py`, `tests/test_ui.py` — Unit tests (`.venv/bin/pytest -v`).
 
 ## Mathematical Specifications
@@ -40,10 +41,16 @@ Keep business logic strictly separated from the GUI:
   - [x] Preserve all Phase 1 features: editable assumptions table (volatility/variance toggle), auto-mirroring correlation matrix (diagonal locked to `1.0`), short-selling toggle, mutually exclusive CAL target selector, and complete portfolio summary table.
   - [x] Replace `messagebox` popups with Flet `ft.AlertDialog` / `ft.SnackBar` notifications, and use responsive scrollable layout containers so the app adapts cleanly to browser viewports.
 - [x] **Browser-safe CSV Import/Export:** Replace `tkinter.filedialog` with Flet's `FilePicker` / in-memory browser download flow (`with_data=True` and `src_bytes`) since Pyodide cannot access the user's native filesystem directly.
-- [x] **Local Pyodide static build & Vercel readiness check:**
+- [x] **Local Pyodide static build & Vercel deployment:**
   - [x] Run `flet publish main.py` locally and serve `./dist` via `python -m http.server --directory dist`.
   - [x] Verify in a real browser that `numpy`, `scipy`, and `matplotlib` load cleanly in Pyodide, optimization runs without console errors, correlation mirroring works, and CSV export/import functions before pushing to Vercel.
   - [x] Re-run `.venv/bin/pytest -v` to confirm all math, data, and UI unit tests pass after dropping `pandas`.
+  - [x] Add `vercel.json` using `/tmp/flet-venv` via `uv` and deploy live on Vercel.
+
+## Git & Deployment Workflow
+- **Remote (`origin`):** `git@github.com:msteinborn/portfolio_optimizer.git` (SSH — use SSH, not HTTPS, as this machine authenticates to GitHub via `~/.ssh/id_ed25519` with `ssh -T git@github.com`).
+- **Push / Pull:** `git push origin <branch>` and `git pull origin <branch>` work directly over SSH without prompts.
+- **Vercel:** Connected to `msteinborn/portfolio_optimizer`; pushing commits automatically triggers builds via `vercel.json`.
 
 ## Agent Guidelines
 - Do not mix `scipy` calculations inside UI event callbacks; call `src/optimizer.py`.
