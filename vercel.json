@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "installCommand": "python3 -m pip install 'flet>=1.0.0' flet-cli flet-web",
-  "buildCommand": "flet publish main.py --app-name 'International Equity Portfolio Optimizer' --app-short-name 'PortfolioOpt'",
+  "installCommand": "uv venv /tmp/flet-venv && uv pip install --python /tmp/flet-venv/bin/python 'flet>=1.0.0' flet-cli flet-web",
+  "buildCommand": "/tmp/flet-venv/bin/flet publish main.py --app-name 'International Equity Portfolio Optimizer' --app-short-name 'PortfolioOpt'",
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
