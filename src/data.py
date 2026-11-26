@@ -9,27 +9,67 @@ import csv
 import io
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Optional, Sequence
 
 import numpy as np
 
 from src.optimizer import validate_correlation_matrix
 
+# Default global equity risk premium (E[R_m] - R_f), annualized decimal.
+DEFAULT_ERP = 0.045
+
+# Baked-in placeholder betas vs. a global equity market portfolio.
+DEFAULT_BETA_BY_MARKET: dict[str, float] = {
+    "US": 1.00,
+    "Europe ex-UK": 0.95,
+    "Japan": 0.85,
+    "UK": 0.90,
+    "Emerging Markets": 1.20,
+}
+# Used when a market name is not in DEFAULT_BETA_BY_MARKET and no beta column is given.
+DEFAULT_BETA_FALLBACK = 1.00
+
 
 @dataclass(frozen=True)
 class MarketDataset:
-    """Container for international equity market assumptions."""
+    """Container for international equity market assumptions.
+
+    `betas` and `alphas` are optional (None = not specified). Use
+    `resolved_betas()` / `resolved_alphas()` to get concrete arrays.
+    `erp` is the global equity risk premium used by Global CAPM.
+    """
 
     names: list[str]
     expected_returns: np.ndarray
     volatilities: np.ndarray
     corr_matrix: np.ndarray
     risk_free_rate: float = 0.03
+    betas: Optional[np.ndarray] = None
+    alphas: Optional[np.ndarray] = None
+    erp: float = DEFAULT_ERP
 
     @property
     def variances(self) -> np.ndarray:
         """Annualized variances (sigma^2)."""
         return self.volatilities**2
+
+    def resolved_betas(self) -> np.ndarray:
+        if self.betas is not None:
+            return np.asarray(self.betas, dtype=float)
+        return default_betas_for(self.names)
+
+    def resolved_alphas(self) -> np.ndarray:
+        if self.alphas is not None:
+            return np.asarray(self.alphas, dtype=float)
+        return np.zeros(len(self.names), dtype=float)
+
+
+def default_betas_for(names: Sequence[str]) -> np.ndarray:
+    """Baked-in beta for each market name (fallback for unknown names)."""
+    return np.array(
+        [DEFAULT_BETA_BY_MARKET.get(name, DEFAULT_BETA_FALLBACK) for name in names],
+        dtype=float,
+    )
 
 
 def get_default_preset() -> MarketDataset:
@@ -58,11 +98,17 @@ def get_default_preset() -> MarketDataset:
         volatilities=volatilities,
         corr_matrix=corr_matrix,
         risk_free_rate=0.03,
+        betas=default_betas_for(names),
+        alphas=np.zeros(len(names), dtype=float),
+        erp=DEFAULT_ERP,
     )
 
 
 def serialize_market_assumptions_csv(dataset: MarketDataset) -> str:
-    """Serialize market assumptions to a CSV string."""
+    """Serialize market assumptions to a CSV string.
+
+    Columns: market, expected_return, volatility, variance, beta, alpha, <one per market>.
+    """
     n = len(dataset.names)
     if (
         len(dataset.expected_returns) != n
@@ -72,15 +118,22 @@ def serialize_market_assumptions_csv(dataset: MarketDataset) -> str:
         raise ValueError("Dataset dimensions are inconsistent.")
 
     corr = validate_correlation_matrix(dataset.corr_matrix)
+    betas = dataset.resolved_betas()
+    alphas = dataset.resolved_alphas()
+
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["market", "expected_return", "volatility", "variance", *dataset.names])
+    writer.writerow(
+        ["market", "expected_return", "volatility", "variance", "beta", "alpha", *dataset.names]
+    )
     for i, name in enumerate(dataset.names):
         row = [
             name,
             f"{float(dataset.expected_returns[i]):.10g}",
             f"{float(dataset.volatilities[i]):.10g}",
             f"{float(dataset.variances[i]):.10g}",
+            f"{float(betas[i]):.10g}",
+            f"{float(alphas[i]):.10g}",
             *(f"{float(corr[i, j]):.10g}" for j in range(n)),
         ]
         writer.writerow(row)
@@ -90,21 +143,24 @@ def serialize_market_assumptions_csv(dataset: MarketDataset) -> str:
 def save_market_assumptions_csv(
     dataset: MarketDataset, filepath: str | Path
 ) -> None:
-    """Save market assumptions (returns, volatilities, variances, correlations) to CSV."""
+    """Save market assumptions (returns, volatilities, variances, betas, correlations) to CSV."""
     csv_text = serialize_market_assumptions_csv(dataset)
     Path(filepath).write_text(csv_text, encoding="utf-8")
 
 
 def parse_market_assumptions_csv_text(
-    csv_text: str, risk_free_rate: float = 0.03
+    csv_text: str, risk_free_rate: float = 0.03, erp: float = DEFAULT_ERP
 ) -> MarketDataset:
     """Parse market assumptions from a CSV string and validate the correlation matrix.
 
-    Expected columns:
-    - `market`: market name
-    - `expected_return`: annualized expected return (decimal)
-    - `volatility` and/or `variance`: annualized volatility or variance (decimal)
-    - One correlation column per market name matching the `market` rows
+    Required columns:
+    - `market`, `expected_return`
+    - `volatility` and/or `variance`
+    - One correlation column per market name
+
+    Optional columns (backward compatible):
+    - `beta`: market beta vs. the global market. Missing -> baked-in default per market name.
+    - `alpha`: annualized alpha (decimal). Missing -> zeros.
     """
     reader = csv.DictReader(io.StringIO(csv_text.lstrip("\ufeff")))
     fieldnames = [c.strip() for c in (reader.fieldnames or [])]
@@ -154,6 +210,26 @@ def parse_market_assumptions_csv_text(
             raise ValueError("Variances must be finite and non-negative.")
         volatilities = np.sqrt(variances)
 
+    if "beta" in fieldnames:
+        try:
+            betas = np.array([float(row["beta"]) for row in rows], dtype=float)
+        except ValueError as exc:
+            raise ValueError("Betas must be numeric.") from exc
+        if not np.all(np.isfinite(betas)):
+            raise ValueError("Betas must be finite.")
+    else:
+        betas = default_betas_for(names)
+
+    if "alpha" in fieldnames:
+        try:
+            alphas = np.array([float(row["alpha"]) for row in rows], dtype=float)
+        except ValueError as exc:
+            raise ValueError("Alphas must be numeric.") from exc
+        if not np.all(np.isfinite(alphas)):
+            raise ValueError("Alphas must be finite.")
+    else:
+        alphas = np.zeros(len(names), dtype=float)
+
     missing_corr_cols = [name for name in names if name not in fieldnames]
     if missing_corr_cols:
         raise ValueError(
@@ -177,15 +253,20 @@ def parse_market_assumptions_csv_text(
         volatilities=volatilities,
         corr_matrix=corr_matrix,
         risk_free_rate=float(risk_free_rate),
+        betas=betas,
+        alphas=alphas,
+        erp=float(erp),
     )
 
 
 def load_market_assumptions_csv(
-    filepath: str | Path, risk_free_rate: float = 0.03
+    filepath: str | Path, risk_free_rate: float = 0.03, erp: float = DEFAULT_ERP
 ) -> MarketDataset:
     """Load market assumptions from a CSV file path."""
     csv_text = Path(filepath).read_text(encoding="utf-8")
-    return parse_market_assumptions_csv_text(csv_text, risk_free_rate=risk_free_rate)
+    return parse_market_assumptions_csv_text(
+        csv_text, risk_free_rate=risk_free_rate, erp=erp
+    )
 
 
 def serialize_weights_csv(names: Sequence[str], weights: np.ndarray) -> str:
